@@ -15,13 +15,13 @@ Description du programme main.ino
 #include "Config.h"
 #include "DRV_teleinfo.h"
 
-// variable gstion de boucle
-const int watchdog = 30000; // Fréquence d'envoi des données à Domoticz 30s
-boolean firstLoop = LOW;    // Affichage au démarrage
-unsigned long previousMillis = millis();
+// variable gestion de boucle
+const int watchdog = 30000;              // Fréquence d'envoi des données à Domoticz 30s
+unsigned long previousMillis = millis(); // mémoire pour envoi des données
+boolean firstLoop = LOW;                 // Affichage au démarrage
 
 // variable Téléinfo
-char HHPHC;
+char HHPHC;                 // Groupe horaire si option = heures creuses ou tempo
 int ISOUSC;                 // intensité souscrite
 int IINST;                  // intensité instantanée en A
 int IMAX;                   // intensité maxi en A
@@ -30,48 +30,54 @@ int PREAL;                  // puissance reelle en W
 unsigned long HCHC;         // compteur Heures Creuses en W
 unsigned long HCHP;         // compteur Heures Pleines en W
 unsigned long PAPP_arrondi; // PAPP*497/500/16 arrondi
-unsigned long HCP;
-String PTEC;     // Régime actuel : HPJB, HCJB, HPJW, HCJW, HPJR, HCJR
-String ADCO;     // adresse compteur
-String OPTARIF;  // option tarifaire
-String MOTDETAT; // status word
-
-char chksum(char *buff, uint8_t len);
-boolean handleBuffer(char *bufferTeleinfo, int sequenceNumnber);
+String PTEC;                // Régime actuel : HPJB, HCJB, HPJW, HCJW, HPJR, HCJR
+String ADCO;                // Identifiant du compteur
+String OPTARIF;             // option tarifaire (type d’abonnement)
+String MOTDETAT;            // Mot d’état (autocontrôle)
 
 /*
 CREATION DES OBJETS
 */
-// clien MQTT
+
+// client MQTT
 WiFiClient espClient;
 PubSubClient clientMQTT(espClient);
 
-// création objet liaison série
+// objet liaison série
 SoftwareSerial mySerial;
 
 OneWire oneWire(PIN_DS18B20);
 // Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
 
+/*
+setup
+*/
 void setup()
 {
     Serial.begin(115200);
 
     pinMode(PIN_RELAY, OUTPUT);
 
-    // Start LE ds18b20
+    // Start LE DS18b20
     sensors.begin();
 
     // Connexion au réseau wifi
     setup_wifi(local_IP, gateway, subnet, ssid, password);
     delay(500);
 
-    clientMQTT.setServer(MQTT_SERVER, 1883); //Configuration de la connexion au serveur MQTT
-    clientMQTT.setCallback(callback);        //La fonction de callback qui est executée à chaque réception de message
+    //Configuration de la connexion au serveur MQTT
+    clientMQTT.setServer(MQTT_SERVER, 1883);
+    //La fonction de callback qui est executée à chaque réception de message
+    clientMQTT.setCallback(callback);
 
+    // Configure la liaison série pour TéléInfo
     setupTeleInfo(SS_BAUDRATE, PIN_TELEINFO, SS_BUFFER_SIZE);
 }
 
+/*
+loop
+*/
 void loop()
 {
     // Connexion client MQTT
@@ -97,10 +103,9 @@ void loop()
             // sendToDomoticz_Relais(IDXRELAIS, digitalRead(PIN_RELAY), topic_Domoticz_IN);
             firstLoop = HIGH;
         }
-        //Envoi MQTT
-        // envoi température du DS18B20
+
+        // Envoi MQTT température du DS18B20
         sendMqttToDomoticz(IDXTEMP, String(retourSensor()), topic_Domoticz_IN);
-        // sendToDomoticz_DS18B20(IDXTEMP, retourSensor(), topic_Domoticz_IN);
 
         teleInfoReceived = readTeleInfo(&mySerial); // réception caractères de téléinfo
         if (teleInfoReceived)
@@ -108,22 +113,25 @@ void loop()
             displayTeleInfo(); // console pour voir les trames téléinfo
             if (0 < HCHC && 0 < HCHP)
             {
-                //Envoi domoticz consommation elec
+                //Envoi MQTT consommation elec
                 cmd = String(HCHC) + ";" + String(HCHP) + ";0;0;" + String(PREAL) + ";0";
                 sendMqttToDomoticz(IDXTELEINFO, cmd, topic_Domoticz_IN);
-                // sendToDomoticz_TeleInfo(IDXTELEINFO, HCHC, HCHP, PREAL, topic_Domoticz_IN);
             }
-            //Envoi domoticz courant instantané
+            // Envoi MQTT courant instantané
             sendMqttToDomoticz(IDXIINST, String(IINST), topic_Domoticz_IN);
-            // sendToDomoticz_Iinst(IDXIINST, IINST, topic_Domoticz_IN);
         }
     }
 }
 
-/*************************************************************
-*** Connexion du module ESP au wifi ***
-*** Parametre l'adresse du module   ***
-**************************************************************/
+/*
+setup_wifi
+Connexion du module ESP au wifi
+local_ip -> adressi IP du module
+gateway -> passerelle réseau
+subnet -> masque de sous réseau
+ssid -> nom du SSID pour la connexion Wifi
+password -> mot de passe pour la connexion Wifi 
+ */
 void setup_wifi(IPAddress local_ip, IPAddress gateway, IPAddress subnet, const char *ssid, const char *password)
 {
     // We start by connecting to a WiFi network
@@ -146,6 +154,13 @@ void setup_wifi(IPAddress local_ip, IPAddress gateway, IPAddress subnet, const c
     Serial.println(WiFi.localIP());
 }
 
+/*
+setupTeleInfo
+Configure la liaison série pour TéléInfo
+baud -> vitesse liaison série TéléInfo (1200bauds)
+rxPin -> numéro broche pour la ligne Rx
+buffer_size -> taille du buffer de la liaison série
+*/
 void setupTeleInfo(uint32_t baud, int8_t rxPin, int buffer_size)
 {
     // Démarrage liaison série pour téléinfo
@@ -170,7 +185,12 @@ void setupTeleInfo(uint32_t baud, int8_t rxPin, int buffer_size)
     MOTDETAT = "------";
 }
 
-//Reconnexion server MQTT
+/*
+reconnect
+Connexion server MQTT
+id -> nom du client 
+topic -> nom du topic pour envoyer les messages (domoticz/in)
+*/
 void reconnect(const char *id, const char *topic)
 {
     //Boucle jusqu'à obtenur une reconnexion
@@ -200,7 +220,13 @@ void reconnect(const char *id, const char *topic)
     }
 }
 
-// Déclenche les actions à la réception d'un message
+/*
+callback
+Déclenche les actions à la réception d'un message
+topic -> nom du topic de réception des message (domoticz/out)
+payload -> message reçu
+length -> longueur message reçu
+ */
 void callback(char *topic, byte *payload, unsigned int length)
 {
     DynamicJsonDocument jsonBuffer(MQTT_MAX_PACKET_SIZE);
@@ -232,8 +258,10 @@ void callback(char *topic, byte *payload, unsigned int length)
         }
         int idx = jsonBuffer["idx"];
 
+#ifdef DEBUG
         Serial.print("IDX: ");
         Serial.println(idx);
+#endif
 
         int cmde = jsonBuffer["nvalue"];
 
@@ -258,7 +286,11 @@ void callback(char *topic, byte *payload, unsigned int length)
 }
 
 /*
-sendMqttToDomoticz permet l'envoi d'une valeur String à l'adresse IDX domoticz du materiel sur le topic domoticz/in
+sendMqttToDomoticz
+Mise à jour valeur domoticz par messages MQTT 
+idx -> adresse IDX domoticz du materiel
+svalue -> donnée converti en String à envoyer 
+topic -> topic pour envoyer les message(domoticz/in)
 */
 void sendMqttToDomoticz(int idx, String svalue, const char *topic)
 {
@@ -279,9 +311,11 @@ void sendMqttToDomoticz(int idx, String svalue, const char *topic)
         Serial.println("KO");
 }
 
-//=================================================================================================================
-// Capture des trames de Teleinfo
-//=================================================================================================================
+/*
+readTeleInfo
+Capture des trames de Teleinfo
+ss -> nom de la liaison série loiciel
+*/
 boolean readTeleInfo(SoftwareSerial *ss)
 {
 #define startFrame 0x02 // caractère de début de trame "Start TeXt" STX (002h)
@@ -290,7 +324,9 @@ boolean readTeleInfo(SoftwareSerial *ss)
 #define endLine 0x0D    // caratère fin de groupe d'informations "Carriage Return" CR (00Dh)
 #define maxFrameLen 280 // longueur max d'une trame
 
-    // Serial.println(2); //debug
+#ifdef DEBUG
+    Serial.println(2);
+#endif
 
     int comptChar = 0; // variable de comptage des caractères reçus
     char charIn = 0;   // variable de mémorisation du caractère courant en réception
@@ -317,18 +353,26 @@ boolean readTeleInfo(SoftwareSerial *ss)
     //  while (charIn != endFrame and comptChar<=maxFrameLen)
     while (charIn != endFrame)
     {
-        //Serial.println(12); // debug
+#ifdef DEBUG
+        Serial.println(12);
+#endif
         // tant que des octets sont disponibles en lecture : on lit les caractères
         if (ss->available())
         {
-            //Serial.println(13); // debug
+#ifdef DEBUG
+            Serial.println(13);
+#endif
             charIn = ss->read() & 0x7F;
-            // Serial.println(charIn);
+#ifdef DEBUG
+            Serial.println(charIn);
+#endif
             // incrémente le compteur de caractère reçus
             comptChar++;
             if (charIn == startLine)
             {
-                //Serial.println(14);
+#ifdef DEBUG
+                Serial.println(14);
+#endif
                 bufferLen = 0;
             }
             bufferTeleinfo[bufferLen] = charIn;
@@ -336,12 +380,16 @@ boolean readTeleInfo(SoftwareSerial *ss)
             // ajoute le caractère reçu au String pour les N premiers caractères
             if (charIn == endLine)
             {
-                //Serial.println(15); // debug
+#ifdef DEBUG
+                Serial.println(15);
+#endif
                 checkSum = bufferTeleinfo[bufferLen - 1];
                 if (chksum(bufferTeleinfo, bufferLen) == checkSum)
                 {
                     // we clear the 1st character
-                    //Serial.println(16); // debug
+#ifdef DEBUG
+                    Serial.println(16);
+#endif
                     strncpy(&bufferTeleinfo[0], &bufferTeleinfo[1], bufferLen - 3);
                     bufferTeleinfo[bufferLen - 3] = 0x00;
                     sequenceNumber++;
@@ -360,7 +408,9 @@ boolean readTeleInfo(SoftwareSerial *ss)
             else
             {
                 bufferLen++;
-                // Serial.printf("17 - Buffer: %i", bufferLen);
+#ifdef DEBUG
+                Serial.printf("17 - Buffer: %i", bufferLen);
+#endif
             }
         }
         if (comptChar > maxFrameLen)
@@ -373,17 +423,20 @@ boolean readTeleInfo(SoftwareSerial *ss)
     return true;
 }
 
-//=================================================================================================================
-// Frame parsing
-//=================================================================================================================
-
+/*
+handleBuffer
+Décodage trame TéléInfo
+bufferTeleinfo -> 
+sequenceNumber -> 
+*/
 boolean handleBuffer(char *bufferTeleinfo, int sequenceNumber)
 {
-    // create a pointer to the first char after the space
-    char *resultString = strchr(bufferTeleinfo, ' ') + 1;
+    char *resultString = strchr(bufferTeleinfo, ' ') + 1; // Crée un pointeur sur le premier caractère après l'espace
     boolean sequenceIsOK;
 
-    // Serial.println(3); // debug
+#ifdef DEBUG
+    Serial.println(3);
+#endif
 
     switch (sequenceNumber)
     {
@@ -433,7 +486,7 @@ boolean handleBuffer(char *bufferTeleinfo, int sequenceNumber)
             MOTDETAT = String(resultString);
         break;
     }
-#ifdef debug
+#ifdef DEBUG
     if (!sequenceIsOK)
     {
         Serial.print(F("Out of sequence ..."));
@@ -443,10 +496,12 @@ boolean handleBuffer(char *bufferTeleinfo, int sequenceNumber)
     return sequenceIsOK;
 }
 
-//=================================================================================================================
-// Calculates teleinfo Checksum
-//=================================================================================================================
-
+/*
+chksum
+Calcul de checksum réception TeleInfo
+buff -> 
+len -> 
+*/
 char chksum(char *buff, uint8_t len)
 {
     int i;
@@ -457,6 +512,10 @@ char chksum(char *buff, uint8_t len)
     return (sum);
 }
 
+/*
+displayTeleInfo
+Affiche sur la console le décodage d'une trame TeleInfo
+*/
 void displayTeleInfo()
 {
     /*
@@ -502,10 +561,12 @@ void displayTeleInfo()
 }
 
 /*
-retourSensor Renvoie la température du DS18B20 en float
+retourSensor
+Renvoie la température du DS18B20 en float
 */
 float retourSensor()
-{ // call sensors.requestTemperatures() to issue a global temperature
+{
+    // call sensors.requestTemperatures() to issue a global temperature
     // request to all devices on the bus
     // Serial.print("Requesting temperatures...");
     sensors.requestTemperatures(); // Send the command to get temperatures
