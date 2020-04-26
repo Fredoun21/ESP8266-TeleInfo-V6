@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "ESP8266-divers",
+			"path": "..\\..\\..\\PlatformIO\\Projects\\ESP8266-divers"
+		}
+	]
+}
