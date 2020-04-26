@@ -16,10 +16,22 @@ Description du programme main.ino
 #include "connect.h"
 #include "DRV_teleinfo.h"
 
-// variable gestion de boucle
-const int watchdog = 30000;              // Fréquence d'envoi des données à Domoticz 30s
-unsigned long previousMillis = millis(); // mémoire pour envoi des données
-boolean firstLoop = LOW;                 // Affichage au démarrage
+/*
+ PIN SETTINGS
+ */
+#define PIN_TELEINFO 12 // Entrée TELEINFO
+#define PIN_RELAY 14    // Sortie relais
+#define PIN_DS18B20 13  // Entrée température
+
+/*
+CONFIGURATION RESEAU WIFI
+*/
+IPAddress local_IP(192, 168, 1, 70); //Adresse IP
+
+/*
+CONFIGURATION MQTT
+*/
+#define MQTT_ID "ESP8266ClientTeleInfo"
 
 // variable Téléinfo
 char HHPHC;                 // Groupe horaire si option = heures creuses ou tempo
@@ -39,7 +51,6 @@ String MOTDETAT;            // Mot d’état (autocontrôle)
 /*
 CREATION DES OBJETS
 */
-
 // client MQTT
 WiFiClient espClient;
 PubSubClient clientMQTT(espClient);
@@ -64,7 +75,7 @@ void setup()
     sensors.begin();
 
     // Connexion au réseau wifi
-    setup_wifi(local_IP, gateway, subnet, ssid, password);
+    setup_wifi(local_IP, gateway, subnet, SSID, PASSWORD);
     delay(500);
 
     //Configuration de la connexion au serveur MQTT
@@ -84,7 +95,7 @@ void loop()
     // Connexion client MQTT
     if (!clientMQTT.connected())
     {
-        reconnect(MQTT_ID, topic_Domoticz_OUT);
+        reconnect(MQTT_ID, TOPIC_DOMOTICZ_OUT);
     }
     clientMQTT.loop();
 
@@ -100,13 +111,11 @@ void loop()
         // Mise à jour état relais
         if (firstLoop == LOW)
         {
-            sendMqttToDomoticz(IDXRELAIS, String(digitalRead(PIN_RELAY)), topic_Domoticz_IN);
-            // sendToDomoticz_Relais(IDXRELAIS, digitalRead(PIN_RELAY), topic_Domoticz_IN);
-            firstLoop = HIGH;
+            sendMqttToDomoticz(IDXRELAIS, String(digitalRead(PIN_RELAY)), TOPIC_DOMOTICZ_IN);
         }
 
         // Envoi MQTT température du DS18B20
-        sendMqttToDomoticz(IDXTEMP, String(retourSensor()), topic_Domoticz_IN);
+        sendMqttToDomoticz(IDXTEMP, String(retourSensor()), TOPIC_DOMOTICZ_IN);
 
         teleInfoReceived = readTeleInfo(&mySerial); // réception caractères de téléinfo
         if (teleInfoReceived)
@@ -116,14 +125,24 @@ void loop()
             {
                 //Envoi MQTT consommation elec
                 cmd = String(HCHC) + ";" + String(HCHP) + ";0;0;" + String(PREAL) + ";0";
-                sendMqttToDomoticz(IDXTELEINFO, cmd, topic_Domoticz_IN);
+                sendMqttToDomoticz(IDXTELEINFO, cmd, TOPIC_DOMOTICZ_IN);
             }
             // Envoi MQTT courant instantané
-            sendMqttToDomoticz(IDXIINST, String(IINST), topic_Domoticz_IN);
+            sendMqttToDomoticz(IDXIINST, String(IINST), TOPIC_DOMOTICZ_IN);
         }
     }
+    firstLoop = HIGH;
 }
 
+/*
+setup_wifi
+Connexion du module ESP au wifi
+local_ip -> adressi IP du module
+gateway -> passerelle réseau
+subnet -> masque de sous réseau
+ssid -> nom du SSID pour la connexion Wifi
+password -> mot de passe pour la connexion Wifi 
+ */
 void setup_wifi(IPAddress local_ip, IPAddress gateway, IPAddress subnet, const char *ssid, const char *password)
 {
     // We start by connecting to a WiFi network
@@ -239,7 +258,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     Serial.print(messageReceived);
 
     // if domoticz message
-    if (strcmp(topic, topic_Domoticz_OUT) == 0)
+    if (strcmp(topic, TOPIC_DOMOTICZ_OUT) == 0)
     {
         DeserializationError error = deserializeJson(jsonBuffer, messageReceived);
         if (error)

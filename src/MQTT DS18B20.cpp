@@ -10,50 +10,41 @@
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <ArduinoJson.h>
 
-// #define DEBUG // Active l'affichage du debugage sur la console
-#undef DEBUG // Désactive l'affichage du debugage sur la console
+#include "Config.h"
+
+/*
+ PIN SETTINGS
+ */
+#define PIN_RELAIS 14
+#define PIN_ONE_WIRE_BUS 13
 
 /*
 CONFIGURATION RESEAU WIFI
 */
-// #define wifi_ssid "Bbox-39156D4C"
-// #define wifi_password "16D2DD9977F12A97AAAD2C11ED59E2"
-#define SSID "Bbox-39156D4C"
-#define PASSWORD "16D2DD9977F12A97AAAD2C11ED59E2"
-#define HOST "192.168.1.100"
-#define PORT 8080
+IPAddress local_IP(192, 168, 1, 95); //Adresse IP du module
 
-IPAddress gateway(192, 168, 1, 254);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress local_IP(192, 168, 1, 95); //Adresse IP
-
-//Configuration MQTT
-#define MQTT_SERVER "192.168.1.100"
-#define MQTT_USER "guest"     //s'il a été configuré sur Mosquitto
-#define MQTT_PASSWORD "guest" //idem
+/*
+CONFIGURATION MQTT
+*/
 #define MQTT_ID "ESP52Client"
-#define IDXTEMP 18 //IDX de ESPTest52 T°
-#define IDXRELAIS 38
 
-const char *topic_Domoticz_IN = "domoticz/in";
-const char *topic_Domoticz_OUT = "domoticz/out";
+/*
+CONFIGURATION DOMOTICZ
+*/
+#define IDXTEMP 18        //IDX de ESPTest52 T°
+#define IDXESP52RELAIS 38 //IDX de ESPTest52 Relais
 
-// variable gestion de boucle
-const int watchdog = 30000;              // Fréquence d'envoi des données à Domoticz 30s
-unsigned long previousMillis = millis(); // mémoire pour envoi des données
-boolean firstLoop = LOW;                 // Affichage au démarrage
-
-// Data wire is plugged into port 13 on the ESP8266
-#define PIN_RELAIS 14
-#define PIN_ONE_WIRE_BUS 13
-
-//Création des objets
+/*
+Création des objets
+*/
+// client MQTT
 WiFiClient espClient;
 PubSubClient clientMQTT(espClient);
+
 OneWire oneWire(PIN_ONE_WIRE_BUS);
 // Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
@@ -64,6 +55,8 @@ DallasTemperature sensors(&oneWire);
 void setup(void)
 {
     Serial.begin(115200);
+
+    pinMode(PIN_RELAIS, OUTPUT);
 
     // Start LE DS18b20
     sensors.begin();
@@ -86,7 +79,7 @@ void loop(void)
     // Connexion client MQTT
     if (!clientMQTT.connected())
     {
-        reconnect(MQTT_ID, topic_Domoticz_OUT);
+        reconnect(MQTT_ID, TOPIC_DOMOTICZ_OUT);
     }
     clientMQTT.loop();
 
@@ -102,7 +95,10 @@ void loop(void)
         firstLoop = HIGH;
 
         // Envoi MQTT température du DS18B20
-        sendMqttToDomoticz(IDXTEMP, String(retourSensor()), topic_Domoticz_IN);
+        sendMqttToDomoticz(IDXTEMP, String(retourSensor()), TOPIC_DOMOTICZ_IN);
+
+        // Demande état d'un device
+        askMqttToDomoticz(IDXESP52RELAIS, "getdeviceinfo", TOPIC_DOMOTICZ_IN);
     }
 }
 
@@ -145,7 +141,7 @@ topic -> nom du topic pour envoyer les messages (domoticz/in)
 */
 void reconnect(const char *id, const char *topic)
 {
-    //Boucle jusqu'à obtenur une reconnexion
+    //Boucle jusqu'à obtenir une reconnexion
     while (!clientMQTT.connected())
     {
         Serial.print("Connexion au serveur MQTT... Status= ");
@@ -187,7 +183,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     // Affiche le topic entrant - display incoming Topic
     Serial.print("Message arrived [");
     Serial.print(topic);
-    Serial.print("] ");
+    Serial.println("] ");
 
     // decode payload message
     for (int i = 0; i < length; i++)
@@ -199,7 +195,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     Serial.print(messageReceived);
 
     // if domoticz message
-    if (strcmp(topic, topic_Domoticz_OUT) == 0)
+    if (strcmp(topic, TOPIC_DOMOTICZ_OUT) == 0)
     {
         DeserializationError error = deserializeJson(jsonBuffer, messageReceived);
         if (error)
@@ -208,31 +204,28 @@ void callback(char *topic, byte *payload, unsigned int length)
             Serial.println(error.c_str());
             return;
         }
+
         int idx = jsonBuffer["idx"];
+        int nvalue = jsonBuffer["nvalue"];
+        float svalue = jsonBuffer["svalue"];
+        const char *name = jsonBuffer["name"];
 
 #ifdef DEBUG
-        Serial.print("IDX: ");
-        Serial.println(idx);
+        Serial.printf("\nIDX: %i, nVALUE: %i, sVALUE: %f, name: %s", idx, nvalue, float(svalue), name);
 #endif
-
-        int cmde = jsonBuffer["nvalue"];
 
         if (idx == IDXRELAIS)
         {
-            if (cmde == 0)
-            {
+            Serial.printf("\nidx: %i, name: %s, nvalue: %i\n", idx, name, nvalue);
+            if (nvalue == 0)
                 digitalWrite(PIN_RELAIS, LOW);
-            }
-            else if (cmde == 1)
-            {
+            else if (nvalue == 1)
                 digitalWrite(PIN_RELAIS, HIGH);
-            }
             else
             {
-                Serial.println("Erreur dans le message de commande du relais ");
+                Serial.println("\nErreur dans le message de commande du relais ");
             }
-            Serial.print("\nLe relais est ");
-            Serial.print(digitalRead(PIN_RELAIS));
+            Serial.printf("\nLe relais %s est a %i\n", name, digitalRead(PIN_RELAIS));
         }
     }
 }
@@ -276,8 +269,7 @@ void askMqttToDomoticz(int idx, String svalue, const char *topic)
 
     StaticJsonDocument<1024> doc;
     doc["idx"] = idx;
-    doc["nvalue"] = 0;
-    doc["svalue"] = svalue;
+    doc["command"] = svalue;
     serializeJson(doc, msgToPublish);
     Serial.print(msgToPublish);
     Serial.print(" Published to ");
@@ -305,12 +297,12 @@ float retourSensor()
     // Check if reading was successful
     if (tempC != DEVICE_DISCONNECTED_C)
     {
-        Serial.print("Temperature mesurée: ");
+        Serial.print("Temperature mesuree: ");
         Serial.println(tempC);
     }
     else
     {
-        Serial.println("Error: Pas de données de temperature disponible");
+        Serial.println("Error: Pas de donnees de temperature disponible");
     }
     return tempC;
 }
